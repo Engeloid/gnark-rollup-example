@@ -105,7 +105,7 @@ func (circuit *Circuit) postInit(api frontend.API) error {
 		circuit.Transfers[i].ReceiverPubKey = circuit.PublicKeysReceiver[i]
 
 		// allocate the slices for the Merkle proofs
-		// circuit.allocateSlicesMerkleProofs()
+		circuit.allocateSlicesMerkleProofs()
 
 	}
 	return nil
@@ -154,7 +154,6 @@ func (circuit *Circuit) Define(api frontend.API) error {
 		api.AssertIsEqual(circuit.SenderAccountsAfter[i].Index, circuit.LeafSender[i])
 
 		// verify the inclusion proofs
-		// fmt.Println(circuit.LeafReceiver)
 		circuit.MerkleProofReceiverBefore[i].VerifyProof(api, &hFunc, circuit.LeafReceiver[i])
 		circuit.MerkleProofSenderBefore[i].VerifyProof(api, &hFunc, circuit.LeafSender[i])
 		circuit.MerkleProofReceiverAfter[i].VerifyProof(api, &hFunc, circuit.LeafReceiver[i])

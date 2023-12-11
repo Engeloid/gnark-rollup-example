@@ -19,6 +19,7 @@ package rollup
 import (
 	tedwards "github.com/consensys/gnark-crypto/ecc/twistededwards"
 	"github.com/consensys/gnark/frontend"
+	"github.com/consensys/gnark/std/accumulator/merkle"
 	"github.com/consensys/gnark/std/algebra/twistededwards"
 	"github.com/consensys/gnark/std/hash/mimc"
 	"github.com/consensys/gnark/std/signature/eddsa"
@@ -31,29 +32,34 @@ type RollupCircuit struct {
 	// SECRET INPUTS
 
 	// list of accounts involved before update and their public keys
-	SenderAccountsBefore   [BatchSizeCircuit]RollupAccountConstraints
-	ReceiverAccountsBefore [BatchSizeCircuit]RollupAccountConstraints
-	PublicKeysSender       [BatchSizeCircuit]eddsa.PublicKey
+	SenderAccountsBefore   RollupAccountConstraints
+	ReceiverAccountsBefore RollupAccountConstraints
 
 	// list of accounts involved after update and their public keys
-	SenderAccountsAfter   [BatchSizeCircuit]RollupAccountConstraints
-	ReceiverAccountsAfter [BatchSizeCircuit]RollupAccountConstraints
-	PublicKeysReceiver    [BatchSizeCircuit]eddsa.PublicKey
+	SenderAccountsAfter   RollupAccountConstraints
+	ReceiverAccountsAfter RollupAccountConstraints
 
 	// list of transactions
-	Transfers [BatchSizeCircuit]RollupTransferConstraints
+	Amount         frontend.Variable
+	Nonce          frontend.Variable `gnark:"-"`
+	SenderPubKey   eddsa.PublicKey
+	ReceiverPubKey eddsa.PublicKey
+	Signature      eddsa.Signature
 
 	// list of proofs corresponding to sender and receiver accounts
-
-	LeafReceiver [BatchSizeCircuit]frontend.Variable
-	LeafSender   [BatchSizeCircuit]frontend.Variable
+	MerkleProofReceiverBefore merkle.MerkleProof
+	MerkleProofReceiverAfter  merkle.MerkleProof
+	MerkleProofSenderBefore   merkle.MerkleProof
+	MerkleProofSenderAfter    merkle.MerkleProof
+	LeafReceiver              frontend.Variable
+	LeafSender                frontend.Variable
 
 	// ---------------------------------------------------------------------------------------------
 	// PUBLIC INPUTS
 
 	// list of root hashes
-	RootHashesBefore [BatchSizeCircuit]frontend.Variable `gnark:",public"`
-	RootHashesAfter  [BatchSizeCircuit]frontend.Variable `gnark:",public"`
+	RootHashesBefore frontend.Variable `gnark:",public"`
+	RootHashesAfter  frontend.Variable `gnark:",public"`
 }
 
 // AccountConstraints accounts encoded as constraints
@@ -64,41 +70,42 @@ type RollupAccountConstraints struct {
 	PubKey  eddsa.PublicKey `gnark:"-"`
 }
 
-// TransferConstraints transfer encoded as constraints
-type RollupTransferConstraints struct {
-	Amount         frontend.Variable
-	Nonce          frontend.Variable `gnark:"-"`
-	SenderPubKey   eddsa.PublicKey   `gnark:"-"`
-	ReceiverPubKey eddsa.PublicKey   `gnark:"-"`
-	Signature      eddsa.Signature
-}
-
 func (circuit *RollupCircuit) postInit2(api frontend.API) error {
 
 	for i := 0; i < BatchSizeCircuit; i++ {
 
 		// setting the sender accounts before update
-		circuit.SenderAccountsBefore[i].PubKey = circuit.PublicKeysSender[i]
+		circuit.SenderAccountsBefore.PubKey = circuit.SenderPubKey
 
 		// setting the sender accounts after update
-		circuit.SenderAccountsAfter[i].PubKey = circuit.PublicKeysSender[i]
+		circuit.SenderAccountsAfter.PubKey = circuit.SenderPubKey
 
 		// setting the receiver accounts before update
-		circuit.ReceiverAccountsBefore[i].PubKey = circuit.PublicKeysReceiver[i]
+		circuit.ReceiverAccountsBefore.PubKey = circuit.ReceiverPubKey
 
 		// setting the receiver accounts after update
-		circuit.ReceiverAccountsAfter[i].PubKey = circuit.PublicKeysReceiver[i]
+		circuit.ReceiverAccountsAfter.PubKey = circuit.ReceiverPubKey
 
 		// setting the transfers
-		circuit.Transfers[i].Nonce = circuit.SenderAccountsBefore[i].Nonce
-		circuit.Transfers[i].SenderPubKey = circuit.PublicKeysSender[i]
-		circuit.Transfers[i].ReceiverPubKey = circuit.PublicKeysReceiver[i]
+		circuit.Nonce = circuit.SenderAccountsBefore.Nonce
 
 		// allocate the slices for the Merkle proofs
-		// circuit.allocateSlicesMerkleProofs()
+		circuit.AllocateSlicesMerkleProofss()
 
 	}
 	return nil
+}
+
+func (circuit *RollupCircuit) AllocateSlicesMerkleProofss() {
+
+	for i := 0; i < BatchSizeCircuit; i++ {
+		// allocating slice for the Merkle paths
+		circuit.MerkleProofReceiverBefore.Path = make([]frontend.Variable, depth)
+		circuit.MerkleProofReceiverAfter.Path = make([]frontend.Variable, depth)
+		circuit.MerkleProofSenderBefore.Path = make([]frontend.Variable, depth)
+		circuit.MerkleProofSenderAfter.Path = make([]frontend.Variable, depth)
+	}
+
 }
 
 // Define declares the circuit's constraints
@@ -119,28 +126,23 @@ func (circuit *RollupCircuit) Define(api frontend.API) error {
 	// - accounts' balance consistency
 	for i := 0; i < BatchSizeCircuit; i++ {
 
+		// the root hashes of the Merkle path must match the public ones given in the circuit
+		api.AssertIsEqual(circuit.RootHashesBefore, circuit.MerkleProofReceiverBefore.RootHash)
+		api.AssertIsEqual(circuit.RootHashesBefore, circuit.MerkleProofSenderBefore.RootHash)
+		api.AssertIsEqual(circuit.RootHashesAfter, circuit.MerkleProofReceiverAfter.RootHash)
+		api.AssertIsEqual(circuit.RootHashesAfter, circuit.MerkleProofSenderAfter.RootHash)
+
 		// the leafs of the Merkle proofs must match the index of the accounts
-		api.AssertIsEqual(circuit.ReceiverAccountsBefore[i].Index, circuit.LeafReceiver[i])
-		api.AssertIsEqual(circuit.ReceiverAccountsAfter[i].Index, circuit.LeafReceiver[i])
-		api.AssertIsEqual(circuit.SenderAccountsBefore[i].Index, circuit.LeafSender[i])
-		api.AssertIsEqual(circuit.SenderAccountsAfter[i].Index, circuit.LeafSender[i])
-
-		/*
-			// verify the transaction transfer
-			err := verifyTransferSignature(api, circuit.Transfers[i], hFunc)
-			if err != nil {
-				return err
-			}
-
-			// update the accounts
-			verifyAccountUpdated(api, circuit.SenderAccountsBefore[i], circuit.ReceiverAccountsBefore[i], circuit.SenderAccountsAfter[i], circuit.ReceiverAccountsAfter[i], circuit.Transfers[i].Amount)
-		*/
+		api.AssertIsEqual(circuit.ReceiverAccountsBefore.Index, circuit.LeafReceiver)
+		api.AssertIsEqual(circuit.ReceiverAccountsAfter.Index, circuit.LeafReceiver)
+		api.AssertIsEqual(circuit.SenderAccountsBefore.Index, circuit.LeafSender)
+		api.AssertIsEqual(circuit.SenderAccountsAfter.Index, circuit.LeafSender)
 
 		// Reset the hash state!
 		hFunc.Reset()
 
 		// the signature is on h(nonce ∥ amount ∥ senderpubKey (x&y) ∥ receiverPubkey(x&y))
-		hFunc.Write(circuit.Transfers[i].Nonce, circuit.Transfers[i].Amount, circuit.Transfers[i].SenderPubKey.A.X, circuit.Transfers[i].SenderPubKey.A.Y, circuit.Transfers[i].ReceiverPubKey.A.X, circuit.Transfers[i].ReceiverPubKey.A.Y)
+		hFunc.Write(circuit.Nonce, circuit.Amount, circuit.SenderPubKey.A.X, circuit.SenderPubKey.A.Y, circuit.ReceiverPubKey.A.X, circuit.ReceiverPubKey.A.Y)
 		htransfer := hFunc.Sum()
 
 		curve, err := twistededwards.NewEdCurve(api, tedwards.BN254)
@@ -149,10 +151,25 @@ func (circuit *RollupCircuit) Define(api frontend.API) error {
 		}
 
 		hFunc.Reset()
-		err = eddsa.Verify(curve, circuit.Transfers[i].Signature, htransfer, circuit.Transfers[i].SenderPubKey, &hFunc)
+		err = eddsa.Verify(curve, circuit.Signature, htransfer, circuit.SenderPubKey, &hFunc)
 		if err != nil {
 			return err
 		}
+
+		// ensure that nonce is correctly updated
+		nonceUpdated := api.Add(circuit.SenderAccountsBefore.Nonce, 1)
+		api.AssertIsEqual(nonceUpdated, circuit.SenderAccountsAfter.Nonce)
+		api.AssertIsEqual(circuit.ReceiverAccountsBefore.Nonce, circuit.ReceiverAccountsAfter.Nonce)
+
+		// ensures that the amount is less than the balance
+		api.AssertIsLessOrEqual(circuit.Amount, circuit.SenderAccountsBefore.Balance)
+
+		// ensure that balance is correctly updated
+		fromBalanceUpdated := api.Sub(circuit.SenderAccountsBefore.Balance, circuit.Amount)
+		api.AssertIsEqual(fromBalanceUpdated, circuit.SenderAccountsAfter.Balance)
+
+		toBalanceUpdated := api.Add(circuit.ReceiverAccountsBefore.Balance, circuit.Amount)
+		api.AssertIsEqual(toBalanceUpdated, circuit.ReceiverAccountsAfter.Balance)
 	}
 
 	return nil
