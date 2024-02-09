@@ -59,9 +59,9 @@ type Operator struct {
 	NextIndex        uint64            // Next new index to be used if no available indices
 	BatchID          uint64            // Id of batch currently working with
 	// Only for testing/simulation:
-	Keys      []eddsa.PrivateKey
-	RootHashB []byte
-	RootHashA []byte
+	Keys          []eddsa.PrivateKey
+	RootHashesBef [BatchSizeCircuit][]byte
+	RootHashesAf  [BatchSizeCircuit][]byte
 }
 
 // NewOperator creates an operator with all being set to zero.
@@ -93,8 +93,11 @@ func NewOperator(nbAccounts int) Operator {
 	res.AvailableIndices = []uint64{}
 	res.NextIndex = 0
 	res.BatchID = 0
-
 	res.Keys = []eddsa.PrivateKey{}
+	/* for i := 0; i < BatchSizeCircuit; i++ {
+		res.RootHashesAf[i] = make([]byte)
+		res.RootHashesBef[i] = make([]byte)
+	} */
 	res.Witnesses.allocateSlicesMerkleProofs()
 	return res
 }
@@ -189,7 +192,7 @@ func (o *Operator) UpdateState(t Transfer, numTransfer int) error {
 	if err != nil {
 		return err
 	}
-	o.RootHashB = merkleRootBefore
+	o.RootHashesBef[numTransfer] = merkleRootBefore
 	o.Witnesses.RootHashesBefore[numTransfer] = merkleRootBefore
 	o.Witnesses.MerkleProofReceiverBefore[numTransfer].RootHash = merkleRootBefore
 	o.Witnesses.MerkleProofSenderBefore[numTransfer].RootHash = merkleRootBefore
@@ -279,9 +282,8 @@ func (o *Operator) UpdateState(t Transfer, numTransfer int) error {
 	}
 	// merkleProofHelperReceiverAfter := merkle.GenerateProofHelper(proofInclusionReceiverAfter, posReceiver, numLeaves)
 
-	//TODO remove next line
-	o.RootHashA = merkleRootAfer
-
+	// fmt.Printf("lates root in update: %d\n", merkleRootAfer)
+	o.RootHashesAf[numTransfer] = merkleRootAfer
 	o.Witnesses.RootHashesAfter[numTransfer] = merkleRootAfer
 	o.Witnesses.MerkleProofReceiverAfter[numTransfer].RootHash = merkleRootAfer
 	o.Witnesses.MerkleProofSenderAfter[numTransfer].RootHash = merkleRootAfer

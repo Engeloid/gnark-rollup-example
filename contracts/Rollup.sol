@@ -72,22 +72,20 @@ contract Rollup is MerkleTree {
     // only available to external functions
     function submitVerifyBatch(
         uint256[8] calldata zkproof, 
-        uint256 postStateRoot
+        uint256[128] calldata input
         //uint256 batchId, 
         //bytes calldata transactions
-    ) external onlyOwner {        
-        uint256[2] memory input;
+    ) external onlyOwner {       
         uint256 preStateRoot = getRoot();
-        input[0] = preStateRoot;
-        input[1] = postStateRoot;
-
+        //input[0] = preStateRoot;
+        assert(preStateRoot == input[0]);
         //TODO: adjust for multiple transactions (BatchSize greather than 1)
         verifier.verifyProof(zkproof, input); // If the function hasn't reverted, zkProof is valid.
         
         // Emit an event containing the batchId and the transaction data
         // This data will be stored on the blockchain and can be accessed using blockchain explorers or Ethereum nodes
         //emit TransactionData(batchId, transactions);
-
+        uint256 postStateRoot = input[input.length - 1];
         setRoot(postStateRoot); // New merkle root is part of the input
         emit MerkleRootUpdated(postStateRoot);
     }
@@ -128,7 +126,6 @@ contract Rollup is MerkleTree {
         // Processed deposit in queue and increase for next deposit
         depositQueueIndex++;
     }
-
 
     // Function to deposit funds to the depositQueue in the rollup and register
     function deposit() external payable {
@@ -189,21 +186,5 @@ contract Rollup is MerkleTree {
         input[4] = account.pubKey.y;
         
         return MiMC.hash(input);
-    }
-
-     // --------- old ------------
-
-    //TEMP verfy function for now: later use submitVerifyBatch() instead
-    function verifyZkProof(uint256[8] calldata proof, uint256[2] calldata input) public onlyOwner {
-        //TODO use MerkleRootBefore from the current root in the contract
-        
-        // Call the verifyProof function from the Verifier contract
-        verifier.verifyProof(proof, input);
-
-        //TODO if verified, adjust merkle tree!
-        
-        // If the function hasn't reverted, proof is valid. Update merkleRoot.
-        setRoot(input[1]); // New merkle root is part of the input
-        emit MerkleRootUpdated(getRoot());
     }
 }
