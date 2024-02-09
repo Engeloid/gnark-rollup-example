@@ -44,6 +44,17 @@ func main() {
 	var proof groth16.Proof
 	var err error
 
+	// Create operator with a State of 16 accounts
+	op := NewOperator(NumOfAcc)
+	// If one file does not exist, create constraint system, new verifier contract etc.
+	if FileExists(FileToRVK) || FileExists(FileToRPK) || FileExists(FileToRCS) || FileExists(FileToZKVerifier) {
+		// Otherwise load them from local repo
+		_, _, _, err = op.SetupZKVerifierContract()
+		if err != nil {
+			log.Fatalf("Could not create zk verifier contract file: %v", err)
+		}
+	}
+
 	// Connect to your Ethereum node (Ganache instance or other network)
 	client, err := ethclient.Dial("ws://127.0.0.1:7545") // Update with your Ganache URL
 	if err != nil {
@@ -71,17 +82,6 @@ func main() {
 	rollupContract, err := NewRollup(rollupContractAddress, client)
 	if err != nil {
 		log.Fatalf("Failed to instantiate Rollup contract: %v", err)
-	}
-
-	// Create operator with a State of 16 accounts
-	op := NewOperator(NumOfAcc)
-	// If one file does not exist, create constraint system, new verifier contract etc.
-	if FileExists(FileToRVK) || FileExists(FileToRPK) || FileExists(FileToRCS) || FileExists(FileToZKVerifier) {
-		// Otherwise load them from local repo
-		_, _, _, err = op.SetupZKVerifierContract()
-		if err != nil {
-			log.Fatalf("Could not create zk verifier contract file: %v", err)
-		}
 	}
 
 	//Create initial merkle tree
@@ -128,14 +128,14 @@ func main() {
 		log.Fatalf("Failed to deposit to rollup contract: %v", err)
 	}
 	// Second deposit to first acount
-	time.Sleep(5 * time.Second)
+	time.Sleep(4 * time.Second)
 	_, err = rollupContract.Deposit(auth)
 	if err != nil {
 		log.Fatalf("Failed to deposit to rollup contract: %v", err)
 	}
 
 	// Second accout on rollup
-	time.Sleep(5 * time.Second)
+	time.Sleep(4 * time.Second)
 	senderPriv2, err := crypto.HexToECDSA(accounts[3].PrivateKey[2:])
 	if err != nil {
 		log.Fatalf("Failed to transform to ECDSA: %v", err)
@@ -152,7 +152,7 @@ func main() {
 		log.Fatalf("Failed to deposit to rollup contract: %v", err)
 	}
 
-	time.Sleep(5 * time.Second)
+	time.Sleep(2 * time.Second)
 	// Fetch and print contract balance
 	contractBalance, err := client.BalanceAt(context.Background(), rollupContractAddress, nil)
 	if err != nil {
@@ -204,19 +204,27 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to generate zkProof: %v", err)
 	}
-	eth_proof, _ := ProofToEthereumProof(proof)
-	// Transform data to fit contract call
-	// TODO, get root from state
-	input := new(big.Int).SetBytes(op.RootHashA)
 
+	// Transform data to fit contract call
+	eth_proof, _ := ProofToEthereumProof(proof)
+	input := [PublicInputSize]*big.Int{}
+	// Note that first all of the first public inputs must be provided then the second and so on
+	for i := 0; i < BatchSizeCircuit; i++ {
+		input[i] = new(big.Int).SetBytes(op.RootHashesBef[i])
+		input[i+BatchSizeCircuit] = new(big.Int).SetBytes(op.RootHashesAf[i])
+	}
+
+	// Submit batch
 	_, err = rollupContract.SubmitVerifyBatch(authOwner, eth_proof.Proof, input)
 	if err != nil {
 		log.Fatalf("Failed to submit batch: %v", err)
 	}
-	fmt.Printf(Colorbold+ColorGreen+"zkProof sucessful on-chain: %d\n"+ColorReset, op.RootHashA)
+	fmt.Printf(Colorbold+ColorGreen+"zkProof sucessful on-chain: %d\n"+ColorReset, op.RootHashesAf[len(op.RootHashesAf)-1])
+	/* latestRootafter, _ := rollupContract.GetMerkleRoot(nil)
+	fmt.Printf("Latest root after batch: %d\n", latestRootafter.Bytes()) */
 
 	// Withdrawal from contract
-	time.Sleep(5 * time.Second)
+	time.Sleep(4 * time.Second)
 	withdrawAccount, err := op.ReadAccount(1)
 	if err != nil {
 		log.Fatalf("Failed to fetch withdraw account: %v", err)
@@ -370,12 +378,10 @@ func main() {
 		}
 	}
 
-	eth_proofs, _ := ProofToEthereumProof(proof)
-
 	// Transform data to fit contract call
 	input_value := [2]*big.Int{}
-	input_value[0] = new(big.Int).SetBytes(op.RootHashB)
-	input_value[1] = new(big.Int).SetBytes(op.RootHashA)
+	input_value[0] = new(big.Int).SetBytes(op.RootHashesBef[0])
+	input_value[1] = new(big.Int).SetBytes(op.RootHashesAf[0])
 
 	// sender.PubKey.A.X.BigInt(new(big.Int))
 	// input_value[3] = new(big.Int).SetUint64(35)
@@ -422,18 +428,4 @@ func main() {
 	// ---- zk-proof verification on chain ------------
 	// ownerPub := common.HexToAddress(accounts[5].PublicKey)
 
-	// get merkleroot after inital set
-	getRoot, err := rollupContract.GetMerkleRoot(nil)
-	fmt.Printf("Initial root hash in contract = %x\n", getRoot)
-
-	// verify new state
-	verifytx, err := rollupContract.SubmitVerifyBatch(authOwner, eth_proofs.Proof, new(big.Int).SetBytes(op.RootHashA))
-	if err != nil {
-		log.Fatalf("Failed to verify: %v", err)
-	}
-	fmt.Printf(Colorbold+ColorGreen+"ZK-Proof valid: %s\n"+ColorReset, verifytx.Hash().Hex())
-
-	// get merkle root after state update
-	getRootAfter, err := rollupContract.GetMerkleRoot(nil)
-	fmt.Printf("Root hash in contract after update = %x\n", getRootAfter)
 }
