@@ -19,3 +19,13 @@
 
 # Go workspace file
 go.work
+
+# Generated files
+build/
+bindings/
+*.proof
+*.cs
+*.pk
+*.vk
+
+*-workspace
