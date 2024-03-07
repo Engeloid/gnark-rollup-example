@@ -4,7 +4,7 @@
 pragma solidity ^0.8.4;
 
 import "./MerkleTree.sol";
-import "./gnark_verifier.sol";
+import "./verifier_1.sol";
 import "./MiMC.sol";
 
 contract Rollup is MerkleTree {
@@ -72,7 +72,7 @@ contract Rollup is MerkleTree {
     // only available to external functions
     function submitVerifyBatch(
         uint256[8] calldata zkproof, 
-        uint256[128] calldata input
+        uint256[8] calldata input
         //uint256 batchId, 
         //bytes calldata transactions
     ) external onlyOwner {       

@@ -8,24 +8,18 @@ import (
 	"log"
 	"math/big"
 	"os"
-	"path/filepath"
 	. "rollup/src/gnark_rollup"
 	. "rollup/src/tools"
 	"time"
 
 	"github.com/consensys/gnark-crypto/accumulator/merkletree"
-	"github.com/consensys/gnark-crypto/ecc"
 
 	//"github.com/consensys/gnark-crypto/ecc/bn254/fr/mimc"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr/mimc"
 	"github.com/consensys/gnark/backend/groth16"
-	"github.com/consensys/gnark/frontend"
-	"github.com/consensys/gnark/frontend/cs/r1cs"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
-	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
-	"github.com/tidwall/gjson"
 )
 
 const (
@@ -44,12 +38,20 @@ func main() {
 	var proof groth16.Proof
 	var err error
 
-	// Create operator with a State of 16 accounts
+	// Create an operator for two different rollups with 16 accounts
 	op := NewOperator(NumOfAcc)
+	op2 := NewOperator(NumOfAcc)
 	// If one file does not exist, create constraint system, new verifier contract etc.
 	if FileExists(FileToRVK) || FileExists(FileToRPK) || FileExists(FileToRCS) || FileExists(FileToZKVerifier) {
 		// Otherwise load them from local repo
-		_, _, _, err = op.SetupZKVerifierContract()
+		_, _, _, err = op.SetupZKVerifierContract(FileToRVK, FileToRPK, FileToRCS, FileToZKVerifier)
+		if err != nil {
+			log.Fatalf("Could not create zk verifier contract file: %v", err)
+		}
+	}
+	if FileExists(FileToR2VK) || FileExists(FileToR2PK) || FileExists(FileToR2CS) || FileExists(FileToZKVerifier2) {
+		// Otherwise load them from local repo
+		_, _, _, err = op2.SetupZKVerifierContract(FileToR2VK, FileToR2PK, FileToR2CS, FileToZKVerifier2)
 		if err != nil {
 			log.Fatalf("Could not create zk verifier contract file: %v", err)
 		}
@@ -72,17 +74,13 @@ func main() {
 		log.Fatalf("Error unmarshaling JSON: %v\n", err)
 	}
 
-	// Create contract instance
-	rollup_contract_json, err := os.ReadFile("build/contracts/Rollup.json")
-	if err != nil {
-		log.Fatalf("Error reading JSON file: %v\n", err)
-	}
-	json_rollup_contract_address := gjson.Get(string(rollup_contract_json), "networks.5777.address")
-	rollupContractAddress := common.HexToAddress(json_rollup_contract_address.String())
-	rollupContract, err := NewRollup(rollupContractAddress, client)
-	if err != nil {
-		log.Fatalf("Failed to instantiate Rollup contract: %v", err)
-	}
+	// Create contract instance of first rollup
+	r1Contract, r1ContractAddress := InstantiateRollup("build/contracts/Rollup-1.json", client, true)
+	// Create contract instance of second rollup
+	r2Contract, r2ContractAddress := InstantiateRollup("build/contracts/Rollup.json", client, false)
+
+	latestRootafter, _ := r2Contract.GetMerkleRoot(nil)
+	fmt.Printf("Init root on second contract: %x\n", latestRootafter.Bytes())
 
 	//Create initial merkle tree
 	var buf bytes.Buffer
@@ -94,7 +92,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to init merkle tree: %v", err)
 	}
-	fmt.Printf("Init merkle root: %d\n", big.NewInt(0).SetBytes(merkleRootInit))
+	fmt.Printf("Init merkle root: %x\n", big.NewInt(0).SetBytes(merkleRootInit))
 
 	// -------- on-chain stuff -----------
 	owner, err := crypto.HexToECDSA(accounts[0].PrivateKey[2:])
@@ -107,7 +105,7 @@ func main() {
 	}
 
 	// Start listening to deposit and withdrawal events in a new goroutine
-	go op.ListenToDepositsWithdrawals(rollupContract, authOwner)
+	go op.ListenToDepositsWithdrawals(r1Contract, authOwner)
 
 	// ------------------ Deposit and withdraw tests -------------
 	senderPriv, err := crypto.HexToECDSA(accounts[1].PrivateKey[2:])
@@ -123,13 +121,13 @@ func main() {
 	// Set up the transact opts
 	auth.Value = depositAmount      // Value in wei to send
 	auth.GasLimit = uint64(6721975) // Set the gas limit
-	_, err = rollupContract.Deposit(auth)
+	_, err = r1Contract.Deposit(auth)
 	if err != nil {
 		log.Fatalf("Failed to deposit to rollup contract: %v", err)
 	}
 	// Second deposit to first acount
 	time.Sleep(4 * time.Second)
-	_, err = rollupContract.Deposit(auth)
+	_, err = r1Contract.Deposit(auth)
 	if err != nil {
 		log.Fatalf("Failed to deposit to rollup contract: %v", err)
 	}
@@ -147,14 +145,14 @@ func main() {
 	// Set up the transact opts
 	auth2.Value = depositAmount      // Value in wei to send
 	auth2.GasLimit = uint64(6721975) // Set the gas limit
-	_, err = rollupContract.Deposit(auth2)
+	_, err = r1Contract.Deposit(auth2)
 	if err != nil {
 		log.Fatalf("Failed to deposit to rollup contract: %v", err)
 	}
 
 	time.Sleep(2 * time.Second)
 	// Fetch and print contract balance
-	contractBalance, err := client.BalanceAt(context.Background(), rollupContractAddress, nil)
+	contractBalance, err := client.BalanceAt(context.Background(), r1ContractAddress, nil)
 	if err != nil {
 		log.Fatalf("Failed to fetch contract balance: %v", err)
 	}
@@ -200,7 +198,7 @@ func main() {
 	fmt.Printf("Balance of 2nd account: %d\n", big.NewInt(0).SetBytes(op.State[shift-32:shift]))
 
 	// Submit zkProof and root to contract
-	proof, err = op.CreateZKProof()
+	proof, err = op.CreateZKProof(FileToRVK, FileToRPK, FileToRCS, FileToZKVerifier)
 	if err != nil {
 		log.Fatalf("Failed to generate zkProof: %v", err)
 	}
@@ -215,13 +213,13 @@ func main() {
 	}
 
 	// Submit batch
-	_, err = rollupContract.SubmitVerifyBatch(authOwner, eth_proof.Proof, input)
+	_, err = r1Contract.SubmitVerifyBatch(authOwner, eth_proof.Proof, input)
 	if err != nil {
 		log.Fatalf("Failed to submit batch: %v", err)
 	}
-	fmt.Printf(Colorbold+ColorGreen+"zkProof sucessful on-chain: %d\n"+ColorReset, op.RootHashesAf[len(op.RootHashesAf)-1])
+	fmt.Printf(Colorbold+ColorGreen+"zkProof sucessful on-chain: %x\n"+ColorReset, op.RootHashesAf[len(op.RootHashesAf)-1])
 	/* latestRootafter, _ := rollupContract.GetMerkleRoot(nil)
-	fmt.Printf("Latest root after batch: %d\n", latestRootafter.Bytes()) */
+	fmt.Printf("Latest root after batch: %x\n", latestRootafter.Bytes()) */
 
 	// Withdrawal from contract
 	time.Sleep(4 * time.Second)
@@ -247,19 +245,23 @@ func main() {
 	auth.Value = big.NewInt(0)                             // Reset to 0 as we're not sending ETH for a withdrawal
 	auth2.Value = big.NewInt(0)                            // Reset to 0 as we're not sending ETH for a withdrawal                        // Adjust the Gas Limit as per the withdrawal transaction requirement
 	withdrawAmount := big.NewInt(1000000002000000)         // 0.001 ETH in Wei, adjust as needed
-	_, err = rollupContract.Withdraw(auth2, withdrawAmount, withdrawEthProof.Proof, withdrawAccountEth)
+	_, err = r1Contract.Withdraw(auth2, withdrawAmount, withdrawEthProof.Proof, withdrawAccountEth)
 	if err != nil {
 		log.Fatalf("Failed to withdraw: %v", err)
 	}
 
 	time.Sleep(2 * time.Second)
 	// Fetch and print contract balance
-	contractBalance, err = client.BalanceAt(context.Background(), rollupContractAddress, nil)
+	contractBalance, err = client.BalanceAt(context.Background(), r1ContractAddress, nil)
 	if err != nil {
 		log.Fatalf("Failed to fetch contract balance: %v", err)
 	}
-
 	fmt.Println("Contract balance after withdrawal:", contractBalance)
+	contract2Balance, err := client.BalanceAt(context.Background(), r2ContractAddress, nil)
+	if err != nil {
+		log.Fatalf("Failed to fetch contract balance: %v", err)
+	}
+	fmt.Println("Contract balance of second rollup:", contract2Balance)
 
 	// Compare latest merkle root
 	time.Sleep(2 * time.Second)
@@ -273,157 +275,14 @@ func main() {
 		log.Fatalf("Failed to create merkle proof: %v", err)
 	}
 	latestLocalBigRoot := new(big.Int).SetBytes(latestLocalRoot)
-	latestRoot, _ := rollupContract.GetMerkleRoot(nil)
+	latestRoot, _ := r1Contract.GetMerkleRoot(nil)
 	if latestLocalBigRoot.Cmp(latestRoot) == 0 {
-		fmt.Printf(Colorbold+ColorGreen+"Successfully updated accounts after withdrawal: %d\n"+ColorReset, latestLocalBigRoot)
+		fmt.Printf(Colorbold+ColorGreen+"Successfully updated accounts after withdrawal: %x\n"+ColorReset, latestLocalBigRoot)
 	} else {
-		fmt.Printf("Roots not identical! \nlocal root: %d, \ncontract root: %d\n", latestLocalBigRoot, latestRoot)
+		fmt.Printf("Roots not identical! \nlocal root: %x, \ncontract root: %x\n", latestLocalBigRoot, latestRoot)
 	}
 
 	os.Exit(3)
-
-	//######################## Old Tests #########################
-
-	// ------------------ Circuit stuff ----------------------
-
-	var circuit Circuit
-	for i := 0; i < BatchSizeCircuit; i++ {
-		// allocating slice for the Merkle paths
-		circuit.MerkleProofReceiverBefore[i].Path = make([]frontend.Variable, 5)
-		circuit.MerkleProofReceiverAfter[i].Path = make([]frontend.Variable, 5)
-		circuit.MerkleProofSenderBefore[i].Path = make([]frontend.Variable, 5)
-		circuit.MerkleProofSenderAfter[i].Path = make([]frontend.Variable, 5)
-	}
-	r1cs, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &circuit)
-	if err != nil {
-		log.Fatalln("Could not compile circuit:", err)
-	}
-
-	// groth16 zkSNARK: Setup
-	pk, vk, err := groth16.Setup(r1cs)
-	if err != nil {
-		log.Fatalln("Could not setup pk and vk:", err)
-	}
-
-	// create witness and proof
-	witness, err := frontend.NewWitness(&op.Witnesses, ecc.BN254.ScalarField())
-	// witness, err := frontend.NewWitness(&assignment, ecc.BN254.ScalarField())
-	if err != nil {
-		log.Fatalf("Could not create witnesses: %v", err)
-	}
-	// fmt.Println("witness created: ", witness)
-	publicWitness, err := witness.Public()
-	if err != nil {
-		log.Fatalf("Could not create public witness: %v", err)
-	}
-
-	// generate the proof
-	proof, err = groth16.Prove(r1cs, pk, witness)
-	if err != nil {
-		log.Fatalf("Could not create proof using pk and witnesses: %v", err)
-	}
-
-	// verify the proof
-	err = groth16.Verify(proof, vk, publicWitness)
-	if err != nil {
-		log.Fatalf("invalid proof: %v", err)
-	}
-
-	var useGenProof bool = false
-	if !FileExists(FileToRProof) || !FileExists(FileToRPK) || !FileExists(FileToRCS) {
-		fmt.Println("Proof files will be created")
-		// Setup and generate files (solidity contract, pk, etc.)
-		err := SaveProofToFile(proof, FileToRProof)
-		if err != nil {
-			log.Fatalln(err)
-		}
-		err = SavePKToFile(pk, FileToRPK)
-		if err != nil {
-			log.Fatalln(err)
-		}
-		err = SaveCSToFile(r1cs, FileToRCS)
-		if err != nil {
-			log.Fatalln(err)
-		}
-
-		// export solidity contract
-		fSolidity, err := os.Create(filepath.Join("./contracts/", "gnark_verifier.sol"))
-		if err != nil {
-			log.Fatalln(err)
-		}
-
-		err = vk.ExportSolidity(fSolidity)
-		if err != nil {
-			log.Fatalln(err)
-		}
-
-		err = fSolidity.Close()
-		if err != nil {
-			log.Fatalln(err)
-		}
-		if err != nil {
-			log.Fatalf("Error setting up proof and contract files: %v", err)
-		}
-	} else if useGenProof {
-		// using generated proof
-		fmt.Println("Using Proof just generated")
-	} else {
-		// Load proof
-		proof, err = LoadProofFromFile(FileToRProof)
-		if err != nil {
-			log.Fatalf("Error loading proof: %v", err)
-		} else {
-			fmt.Println("Proof loaded from", FileToRProof)
-			// Now you can use the 'proof' variable in the code.
-		}
-	}
-
-	// Transform data to fit contract call
-	input_value := [2]*big.Int{}
-	input_value[0] = new(big.Int).SetBytes(op.RootHashesBef[0])
-	input_value[1] = new(big.Int).SetBytes(op.RootHashesAf[0])
-
-	// sender.PubKey.A.X.BigInt(new(big.Int))
-	// input_value[3] = new(big.Int).SetUint64(35)
-	fmt.Printf("Input Root hash before = %x\n", input_value[0])
-	fmt.Printf("Input Root hash before as digits = %d\n", input_value[0])
-	fmt.Printf("Input Root hash after = %x\n", input_value[1])
-
-	// ---------------- Truffle/Ganache contract call --------
-
-	// ---------- Gnark verification ---------
-	// Read contract address from migration artefact json
-	/* verifier_json, err := os.ReadFile("build/contracts/Verifier.json")
-	if err != nil {
-		log.Fatalf("Error reading JSON file: %v\n", err)
-	}
-	json_contract_address := gjson.Get(string(verifier_json), "networks.5777.address")
-	contractAddress := common.HexToAddress(json_contract_address.String())
-
-	// Create a contract instance
-	verifier, err := NewVerifier(contractAddress, client)
-	if err != nil {
-		log.Fatalf("Failed to instantiate Verifier contract: %v", err)
-	}
-
-	//var result []interface{}
-	// err = verifier.VerifyProof(nil, eth_proof.A, eth_proof.B, eth_proof.C, input_value)
-	err = verifier.VerifyProof(nil, eth_proofs.Proof, input_value)
-	if err != nil {
-		log.Fatalf("Failed to validate proof: %v", err)
-	}
-
-	fmt.Println(bold + color + "Proof verified on blockchain!!!" + colorReset) */
-
-	// ------------- Rollup contract tests ------------------
-
-	/* 	fmt.Printf("Balance of 1st account: %d\n", operatorA.State[64:96])
-	   	fmt.Printf("Balance of 2nd account: %d\n", operatorA.State[shift-32:shift])
-	   	fmt.Printf("Nonce of 1st account after update: %d\n", sender.Nonce)
-	   	fmt.Printf("Nonce of 1st account after after update of state: %d\n", operatorA.State[32:64]) */
-
-	// r1cs, pk, vk, _ := operatorA.SetupRollupProofAndContract()
-	//operatorA.SetupRollupProofAndContract()
 
 	// ---- zk-proof verification on chain ------------
 	// ownerPub := common.HexToAddress(accounts[5].PublicKey)

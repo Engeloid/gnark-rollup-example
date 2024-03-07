@@ -4,6 +4,10 @@ Facilitation of rollup transactions with basic zk-rollups by gnark.
 
 ## Setup
 
+## Contracts
+
+Ensure that the contracts are saved as utf8.
+
 ### Run solc locally using docker to generate solidity contract
 
 First bind local path, so that docker container has the repo to work with the files.

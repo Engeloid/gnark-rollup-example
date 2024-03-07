@@ -28,7 +28,7 @@ import (
 const (
 	nbAccounts       = 16 // 16 accounts so we know that the proof length is 5
 	depth            = 5  // size fo the inclusion proofs
-	BatchSizeCircuit = 64 // nbTranfers to batch in a proof
+	BatchSizeCircuit = 4  // nbTranfers to batch in a proof
 	PublicInputSize  = 2 * BatchSizeCircuit
 )
 

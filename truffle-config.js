@@ -25,7 +25,7 @@ compilers: {
      settings: {          // See the solidity docs for advice about optimization and evmVersion
       optimizer: {
         enabled: true,
-        runs: 1
+        runs: 5
       },
     //  evmVersion: "byzantium"
      }

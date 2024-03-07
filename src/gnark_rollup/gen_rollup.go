@@ -23,27 +23,33 @@ import (
 	"github.com/consensys/gnark/frontend/cs/r1cs"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/tidwall/gjson"
 )
 
 const (
-	FileToRProof     = "./test/rollupg16.proof"
-	FileToRPK        = "./test/rollupg16.pk"
-	FileToRVK        = "./test/rollupg16.vk"
-	FileToRCS        = "./test/rollupg16.cs"
-	FileToZKVerifier = "./contracts/gnark_verifier.sol"
-	ColorReset       = "\033[0m"
-	ColorBlue        = "\033[33m"
-	ColorGreen       = "\033[32m"
-	ColorRed         = "\033[31m"
-	Colorbold        = "\033[1m"
+	FileToRProof      = "./test/rollupg16.proof"
+	FileToRPK         = "./test/rollupg16.pk"
+	FileToRVK         = "./test/rollupg16.vk"
+	FileToRCS         = "./test/rollupg16.cs"
+	FileToZKVerifier  = "./contracts/verifier_1.sol"
+	FileToR2Proof     = "./test/rollup2g16.proof"
+	FileToR2PK        = "./test/rollup2g16.pk"
+	FileToR2VK        = "./test/rollup2g16.vk"
+	FileToR2CS        = "./test/rollup2g16.cs"
+	FileToZKVerifier2 = "./contracts/verifier_2.sol"
+	ColorReset        = "\033[0m"
+	ColorBlue         = "\033[33m"
+	ColorGreen        = "\033[32m"
+	ColorRed          = "\033[31m"
+	Colorbold         = "\033[1m"
 )
 
 func (o *Operator) AllocateSlices() {
 	o.Witnesses.allocateSlicesMerkleProofs()
 }
 
-func (o *Operator) CreateZKProof() (groth16.Proof, error) {
+func (o *Operator) CreateZKProof(FileToRVK string, FileToRPK string, FileToRCS string, FileToZKVerifier string) (groth16.Proof, error) {
 	var cs constraint.ConstraintSystem
 	var pk groth16.ProvingKey
 	var vk groth16.VerifyingKey
@@ -51,7 +57,7 @@ func (o *Operator) CreateZKProof() (groth16.Proof, error) {
 	// If one file does not exist, create constraint system, new verifier contract etc.
 	if FileExists(FileToRVK) || FileExists(FileToRPK) || FileExists(FileToRCS) || FileExists(FileToZKVerifier) {
 		// Otherwise load them from local repo
-		cs, pk, vk, err = o.SetupZKVerifierContract()
+		cs, pk, vk, err = o.SetupZKVerifierContract(FileToRVK, FileToRPK, FileToRCS, FileToZKVerifier)
 		if err != nil {
 			log.Fatalf("Could not create zk verifier contract file: %v", err)
 		}
@@ -109,7 +115,7 @@ func (o *Operator) CreateZKProof() (groth16.Proof, error) {
 	return proof, err
 }
 
-func (o *Operator) SetupZKVerifierContract() (constraint.ConstraintSystem, groth16.ProvingKey, groth16.VerifyingKey, error) {
+func (o *Operator) SetupZKVerifierContract(FileToRVK string, FileToRPK string, FileToRCS string, FileToZKVerifier string) (constraint.ConstraintSystem, groth16.ProvingKey, groth16.VerifyingKey, error) {
 	var circuit Circuit
 	// allocating slice for the Merkle paths
 	for i := 0; i < BatchSizeCircuit; i++ {
@@ -145,7 +151,7 @@ func (o *Operator) SetupZKVerifierContract() (constraint.ConstraintSystem, groth
 
 	fmt.Println(Colorbold + ColorBlue + "zkVerifier contract will be created" + ColorReset)
 	// export solidity contract
-	fSolidity, err := os.Create(filepath.Join("./contracts/", "gnark_verifier.sol"))
+	fSolidity, err := os.Create(filepath.Join(FileToZKVerifier))
 	if err != nil {
 		log.Fatalln(err)
 	}
@@ -459,119 +465,22 @@ func RollupAccToEth(_acc Account) (RollupAccount, error) {
 	return acc, nil
 }
 
-// ################# old ##########
-
-// ---------- RollupGen ---------
-// RollupGen represents a RollupGen, NOTE: not used yet
-type RollupGen struct {
-	// contract stuff
-	op       Operator
-	userKeys []eddsa.PrivateKey // list of private keys
-	// Mapping of public keys to RollupGen public keys
-	contractBalance int64
-	rootHash        []byte
-
-	// Network stuff
-	networkURL      string         // network URL, e.g.: "HTTP://127.0.0.1:7545"
-	contractAddress common.Address // Ethereum Address of the RollupGen contract
-}
-
-func NewRollupGen(nbAccounts int) RollupGen {
-
-	var _RollupGen RollupGen
-	_op, _keys := GenOperator(nbAccounts)
-	_RollupGen.op = _op
-	_RollupGen.userKeys = _keys
-
-	_RollupGen.networkURL = "HTTP://127.0.0.1:7545"
-
-	_RollupGen.contractBalance = 0
-	_rootHash := "0xab178956422ef"
-	_RollupGen.rootHash = []byte(_rootHash)
-
-	// Read contract address from migration artefact json
-	RollupGen_json, err := os.ReadFile("build/contracts/RollupGen.json")
+func InstantiateRollup(fileToContractJSON string, client *ethclient.Client, first bool) (*Rollup, common.Address) {
+	var json_rollup_contract_address gjson.Result
+	rollup_contract_json, err := os.ReadFile(fileToContractJSON)
 	if err != nil {
 		log.Fatalf("Error reading JSON file: %v\n", err)
 	}
-	json_contract_address := gjson.Get(string(RollupGen_json), "networks.5777.address")
-	contractAddress := common.HexToAddress(json_contract_address.String())
-	_RollupGen.contractAddress = contractAddress
-
-	return _RollupGen
-}
-
-func (o *Operator) MakeTransfer(amount uint64, fromPriv eddsa.PrivateKey, from, to Account) error {
-
-	// create the transfer and sign it
-	transfer := NewTransfer(amount, from.PubKey, to.PubKey, from.Nonce)
-	transfer.Sign(fromPriv, o.H)
-
-	err := o.UpdateState(transfer, 0)
+	if first {
+		json_rollup_contract_address = gjson.Get(string(rollup_contract_json), "address")
+	} else {
+		json_rollup_contract_address = gjson.Get(string(rollup_contract_json), "networks.5777.address")
+	}
+	contractAddress := common.HexToAddress(json_rollup_contract_address.String())
+	rollupContractInstance, err := NewRollup(contractAddress, client)
 	if err != nil {
-		return err
+		log.Fatalf("Failed to instantiate Rollup contract: %v", err)
 	}
 
-	return nil
-}
-
-// returns a single account on the rollup
-func genAccount(i int) (Account, eddsa.PrivateKey) {
-
-	var acc Account
-	var rnd fr.Element
-	var privkey eddsa.PrivateKey
-
-	// create account, the i-th account has a balance of 20+i
-	acc.index = uint64(i)
-	acc.Nonce = uint64(i)
-	acc.balance.SetUint64(uint64(i) + 20)
-	rnd.SetUint64(uint64(i))
-	src := rand.NewSource(int64(i))
-	r := rand.New(src)
-
-	pkey, err := eddsa.GenerateKey(r)
-	if err != nil {
-		panic(err)
-	}
-	privkey = *pkey
-
-	acc.PubKey = privkey.PublicKey
-
-	return acc, privkey
-}
-
-// Returns a newly created operator and the private keys of the associated accounts
-func GenOperator(nbAccounts int) (Operator, []eddsa.PrivateKey) {
-
-	operator := NewOperator(nbAccounts)
-
-	operator.Witnesses.allocateSlicesMerkleProofs()
-
-	userAccounts := make([]eddsa.PrivateKey, nbAccounts)
-
-	// randomly fill the accounts
-	for i := 0; i < nbAccounts; i++ {
-
-		acc, privkey := genAccount(i)
-
-		// fill the index map of the operator
-		b := acc.PubKey.A.X.Bytes()
-		operator.AccountMap[string(b[:])] = acc.index
-
-		// fill user accounts list
-		userAccounts[i] = privkey
-		baccount := acc.Serialize()
-
-		copy(operator.State[SizeAccount*i:], baccount)
-
-		// create the list of hashes of account
-		operator.H.Reset()
-		operator.H.Write(acc.Serialize())
-		buf := operator.H.Sum([]byte{})
-		copy(operator.HashState[operator.H.Size()*i:], buf)
-	}
-
-	return operator, userAccounts
-
+	return rollupContractInstance, contractAddress
 }
